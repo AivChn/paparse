@@ -67,6 +67,7 @@ impl IntoEntry<JsonConsumer> for RawTrackRow {
 
 #[derive(Serialize)]
 struct StructuredRows {
+    path: String,
     title: String,
     artist: Option<String>,
     listen_count: u32,
@@ -76,12 +77,13 @@ impl From<RawTrackRow> for StructuredRows {
     fn from(value: RawTrackRow) -> Self {
         let title = value.name;
         let listen_count = value.listen_count;
-        let artist = PathBuf::from(value.path).file_prefix().and_then(|s| {
+        let artist = PathBuf::from(&value.path).file_prefix().and_then(|s| {
             s.to_str()
-                .and_then(|s| s.strip_suffix(&format!("- {title}")))
+                .and_then(|s| s.strip_suffix(&format!(" - {title}")))
                 .map(str::to_string)
         });
         Self {
+            path: value.path,
             title,
             artist,
             listen_count,
@@ -94,6 +96,7 @@ impl IntoEntry<CsvConsumer> for StructuredRows {
 
     fn into_entry(self) -> Self::Entry {
         vec![
+            self.path,
             self.title,
             self.artist.unwrap_or("".to_string()),
             self.listen_count.to_string(),
@@ -115,6 +118,16 @@ enum Target {
     Json,
 }
 
+impl From<&str> for Target {
+    fn from(value: &str) -> Self {
+        if value == "json" {
+            Self::Json
+        } else {
+            Self::Csv
+        }
+    }
+}
+
 impl Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let v = match self {
@@ -127,8 +140,6 @@ impl Display for Target {
 
 #[derive(clap::Parser)]
 struct Args {
-    #[clap(long, default_value_t = Target::Csv, help="Output format, CSV and JSON supported")]
-    target: Target,
     #[clap(
         long,
         short,
@@ -143,7 +154,6 @@ struct Args {
 
 fn main() -> Result<()> {
     let Args {
-        target,
         structured,
         output,
         file,
@@ -156,6 +166,7 @@ fn main() -> Result<()> {
             .into_string()
             .expect("Failed to parse filename")
     });
+    let target = Target::from(out_name.split(".").last().unwrap_or("csv"));
 
     let path = get_stats_file(&file, out_name.clone())?;
     convert(&path, target, out_name, structured)?;
@@ -163,7 +174,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn convert(path: &DbFile, target: Target, mut out_name: String, structured: bool) -> Result<()> {
+fn convert(path: &DbFile, target: Target, out_name: String, structured: bool) -> Result<()> {
     let conn = Connection::open(path.get()).context("Could not open db file")?;
 
     if !conn.table_exists(None, TABLE_NAME)? {
@@ -171,7 +182,7 @@ fn convert(path: &DbFile, target: Target, mut out_name: String, structured: bool
     }
 
     let mut stmt = conn.prepare(&format!(
-        "SELECT {PATH_COLUMN}, {TRACK_NAME_COLUMN}, {TRACK_LISTEN_COUNT_COLUMN} FROM {TABLE_NAME}"
+        "SELECT DISTINCT {PATH_COLUMN}, {TRACK_NAME_COLUMN}, {TRACK_LISTEN_COUNT_COLUMN} FROM {TABLE_NAME}"
     ))?;
 
     let tracks = stmt
@@ -179,14 +190,13 @@ fn convert(path: &DbFile, target: Target, mut out_name: String, structured: bool
             Ok(RawTrackRow {
                 path: row.get(0)?,
                 name: row.get(1)?,
-                listen_count: row.get(2)?,
+                listen_count: row.get::<_, Option<u32>>(2)?.unwrap_or(0),
             })
         })
         .context("")?;
 
     match target {
         Target::Csv => {
-            out_name.push_str(".csv");
             let writer = csv::Writer::from_writer(File::create(out_name)?);
             let mut consumer = CsvConsumer::new(writer);
             if structured {
@@ -196,7 +206,6 @@ fn convert(path: &DbFile, target: Target, mut out_name: String, structured: bool
             }
         }
         Target::Json => {
-            out_name.push_str(".json");
             let writer = BufWriter::new(File::create(out_name)?);
             let mut consumer = JsonConsumer::new(writer);
             if structured {

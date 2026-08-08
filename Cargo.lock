@@ -538,6 +538,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "paparse"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "csv",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "pbkdf2"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,19 +571,6 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
-
-[[package]]
-name = "poweramp_stats_reader"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "csv",
- "rusqlite",
- "serde",
- "serde_json",
- "zip",
-]
 
 [[package]]
 name = "powerfmt"

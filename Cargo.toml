@@ -1,7 +1,8 @@
 [package]
-name = "poweramp_stats_reader"
-version = "0.1.0"
+name = "paparse"
+version = "1.0.0"
 edition = "2024"
+repository = "git@github.com:AivChn/paparse.git"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -11,3 +12,8 @@ rusqlite = "0.40.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 zip = "8.6.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
