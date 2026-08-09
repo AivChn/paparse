@@ -8,7 +8,7 @@ use std::{
 };
 use zip::{ZipArchive, result::ZipError};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::consumers::{Consumer, CsvConsumer, IntoEntry, JsonConsumer};
 
@@ -23,7 +23,8 @@ pub enum DbFile {
     Perm(PathBuf),
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Deserialize, Debug, Clone, Copy, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum Target {
     Csv,
     Json,
