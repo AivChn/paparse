@@ -2,7 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::parse::{Target, convert, get_stats_file};
+use crate::parse::{convert, get_stats_file};
+pub use parse::Target;
 
 mod consumers;
 mod parse;
