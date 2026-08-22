@@ -5,6 +5,7 @@ use std::{ffi::OsStr, path::PathBuf};
 use crate::parse::{Target, convert, get_stats_file};
 
 mod consumers;
+mod error;
 mod parse;
 
 #[derive(clap::Parser)]

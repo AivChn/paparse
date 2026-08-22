@@ -1,4 +1,3 @@
-use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, Row};
 use std::{
     fmt::Display,
@@ -6,21 +5,32 @@ use std::{
     io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
-use zip::{ZipArchive, result::ZipError};
+use zip::ZipArchive;
 
 use serde::{Deserialize, Serialize};
 
-use crate::consumers::{Consumer, CsvConsumer, IntoEntry, JsonConsumer};
+use crate::{
+    consumers::{Consumer, CsvConsumer, IntoEntry, JsonConsumer},
+    error::Error,
+};
 
 pub const TABLE_NAME: &str = "tracks";
 pub const PATH_COLUMN: &str = "path";
 pub const TRACK_NAME_COLUMN: &str = "readable_name";
 pub const TRACK_LISTEN_COUNT_COLUMN: &str = "total_played_times";
+
 pub const SQLITE_MAGIC_SEQUENCE: &[u8] = b"SQLite format 3";
+const ZIP_MAGIC_SEQUENCE: &[u8] = b"PK\x03\x04";
+const MAX_DB_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 
 pub enum DbFile {
     Tmp(PathBuf),
     Perm(PathBuf),
+}
+
+pub enum SourceType {
+    Archive,
+    Db,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, clap::ValueEnum)]
@@ -136,30 +146,34 @@ impl Display for Target {
     }
 }
 
-pub fn convert(path: &DbFile, target: Target, out_name: String, structured: bool) -> Result<()> {
-    let conn = Connection::open(path.get()).context("Could not open db file")?;
+pub fn convert(
+    path: &DbFile,
+    target: Target,
+    out_name: String,
+    structured: bool,
+) -> Result<(), Error> {
+    let conn = Connection::open(path.get())?;
 
     if !conn.table_exists(None, TABLE_NAME)? {
-        bail!("No tracks table found")
+        return Err(Error::TableNotFound);
     }
 
     let mut stmt = conn.prepare(&format!(
         "SELECT DISTINCT {PATH_COLUMN}, {TRACK_NAME_COLUMN}, {TRACK_LISTEN_COUNT_COLUMN} FROM {TABLE_NAME}"
     ))?;
 
-    let tracks = stmt
-        .query_map([], |row: &Row<'_>| {
-            Ok(RawTrackRow {
-                path: row.get(0)?,
-                name: row.get(1)?,
-                listen_count: row.get::<_, Option<u32>>(2)?.unwrap_or(0),
-            })
+    let tracks = stmt.query_map([], |row: &Row<'_>| {
+        Ok(RawTrackRow {
+            path: row.get(0)?,
+            name: row.get(1)?,
+            listen_count: row.get::<_, Option<u32>>(2)?.unwrap_or(0),
         })
-        .context("")?;
+    })?;
 
     match target {
         Target::Csv => {
-            let writer = csv::Writer::from_writer(File::create(out_name)?);
+            let writer =
+                csv::Writer::from_writer(File::create(out_name).map_err(|_| Error::IoOutput)?);
             let mut consumer = CsvConsumer::new(writer);
             if structured {
                 consumer.consume(tracks.map(|r| r.map(StructuredRows::from)))?;
@@ -168,7 +182,7 @@ pub fn convert(path: &DbFile, target: Target, out_name: String, structured: bool
             }
         }
         Target::Json => {
-            let writer = BufWriter::new(File::create(out_name)?);
+            let writer = BufWriter::new(File::create(out_name).map_err(|_| Error::IoOutput)?);
             let mut consumer = JsonConsumer::new(writer);
             if structured {
                 consumer.consume(tracks.map(|r| r.map(StructuredRows::from)))?;
@@ -181,42 +195,60 @@ pub fn convert(path: &DbFile, target: Target, out_name: String, structured: bool
     Ok(())
 }
 
-fn verify_magic_sequence<F: Read>(f: &mut F) -> Result<()> {
-    let mut buf = [0u8; SQLITE_MAGIC_SEQUENCE.len()];
-    f.read_exact(&mut buf)?;
-
-    if buf != SQLITE_MAGIC_SEQUENCE {
-        bail!("File is not an sqlite db");
-    }
-
-    Ok(())
+const fn max(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
 }
 
-pub fn get_stats_file(path: &Path, mut out_name: String) -> Result<DbFile> {
-    match path.extension().and_then(|s| s.to_str()) {
-        Some("poweramp-backup") => {
-            let mut archive = File::open(path)
-                .map_err(ZipError::from)
-                .and_then(ZipArchive::new)
-                .context("Failed to open archive file")?;
+fn identify_file<F: Read>(f: &mut F) -> Option<SourceType> {
+    let mut buf = [0u8; max(SQLITE_MAGIC_SEQUENCE.len(), ZIP_MAGIC_SEQUENCE.len())];
 
-            let mut stats = archive
-                .by_name("lists-export")
-                .context("Failed to extract the db file")?;
+    f.read_exact(&mut buf).ok()?;
 
-            verify_magic_sequence(&mut stats)?;
+    if &buf[..SQLITE_MAGIC_SEQUENCE.len()] == SQLITE_MAGIC_SEQUENCE {
+        Some(SourceType::Db)
+    } else if &buf[..ZIP_MAGIC_SEQUENCE.len()] == ZIP_MAGIC_SEQUENCE {
+        Some(SourceType::Archive)
+    } else {
+        None
+    }
+}
+
+fn db_magic_bytes_present<F: Read>(f: &mut F) -> bool {
+    let mut buf = [0u8; SQLITE_MAGIC_SEQUENCE.len()];
+    f.read_exact(&mut buf)
+        .is_ok_and(|_| buf == SQLITE_MAGIC_SEQUENCE)
+}
+
+pub fn get_stats_file(path: &Path, mut out_name: String) -> Result<DbFile, Error> {
+    let mut f = File::open(path)?;
+    match identify_file(&mut f) {
+        Some(SourceType::Archive) => {
+            let mut archive = ZipArchive::new(f)?;
+            let mut stats = archive.by_name("lists-export")?;
+
             out_name.push_str("db");
 
-            let mut f = File::create(&out_name).context("Failed to save file")?;
-            f.write_all(SQLITE_MAGIC_SEQUENCE)?;
-            std::io::copy(&mut stats, &mut f).context("Failed to copy data")?;
-            Ok(DbFile::Tmp(PathBuf::from(out_name)))
-        }
-        None | Some("db") => {
-            verify_magic_sequence(&mut File::open(path)?)?;
-            Ok(DbFile::Perm(path.to_path_buf()))
-        }
+            let mut f = File::create(&out_name).map_err(|_| Error::IoOutput)?;
+            if !db_magic_bytes_present(&mut stats) {
+                return Err(Error::NotADbFile);
+            }
 
-        Some(_) => bail!("Not a Poweramp backup file or a db file"),
+            f.write_all(SQLITE_MAGIC_SEQUENCE)?;
+            let mut take = (&mut stats).take(MAX_DB_SIZE);
+            let copied = std::io::copy(&mut take, &mut f).map_err(|_| Error::IoOutput)?;
+
+            // DbFile's Drop impl is now responsible for the file
+            drop(f);
+            let result = Ok(DbFile::Tmp(PathBuf::from(out_name)));
+
+            if copied == MAX_DB_SIZE && stats.read(&mut [0u8; 1]).map_err(|_| Error::IoOutput)? > 0
+            {
+                return Err(Error::ArchiveTooLarge);
+            }
+
+            result
+        }
+        Some(SourceType::Db) => Ok(DbFile::Perm(path.to_path_buf())),
+        None => Err(Error::FileInvalid),
     }
 }
