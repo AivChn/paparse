@@ -1,9 +1,7 @@
 use std::path::Path;
 
-use crate::{
-    error::Error,
-    parse::{convert, get_stats_file},
-};
+use crate::parse::{convert, get_stats_file};
+pub use error::Error;
 pub use parse::Target;
 
 mod consumers;
