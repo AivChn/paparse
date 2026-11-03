@@ -57,10 +57,10 @@ impl Drop for DbFile {
 }
 
 #[derive(Serialize)]
-struct RawTrackRow {
-    path: String,
-    name: String,
-    listen_count: u32,
+pub struct RawTrackRow {
+    pub path: String,
+    pub name: String,
+    pub listen_count: u32,
 }
 
 impl IntoEntry<CsvConsumer> for RawTrackRow {
@@ -79,12 +79,12 @@ impl IntoEntry<JsonConsumer> for RawTrackRow {
     }
 }
 
-#[derive(Serialize)]
-struct StructuredRows {
-    path: String,
-    title: String,
-    artist: Option<String>,
-    listen_count: u32,
+#[derive(Serialize, Clone)]
+pub struct StructuredRows {
+    pub path: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub listen_count: u32,
 }
 
 impl From<RawTrackRow> for StructuredRows {
@@ -198,6 +198,46 @@ pub fn convert(
             }
         }
     }
+
+    Ok(())
+}
+
+pub enum RowType<'a> {
+    Structured(&'a mut Vec<StructuredRows>),
+    Unstructured(&'a mut Vec<RawTrackRow>),
+}
+
+pub fn convert_in_mem(path: &DbFile, structured: RowType<'_>) -> Result<(), Error> {
+    let conn = Connection::open(path.get())?;
+
+    if !conn.table_exists(None, TABLE_NAME)? {
+        return Err(Error::TableNotFound);
+    }
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT {PATH_COLUMN}, {TRACK_NAME_COLUMN}, {TRACK_LISTEN_COUNT_COLUMN} FROM {TABLE_NAME}"
+    ))?;
+
+    let tracks = stmt.query_map([], |row: &Row<'_>| {
+        Ok(RawTrackRow {
+            path: row.get(0)?,
+            name: row.get(1)?,
+            listen_count: row.get::<_, Option<u32>>(2)?.unwrap_or(0),
+        })
+    })?;
+
+    match structured {
+        RowType::Structured(items) => {
+            items.extend(
+                tracks
+                    .map(|s| s.map(StructuredRows::from))
+                    .collect::<Result<Vec<StructuredRows>, rusqlite::Error>>()?,
+            );
+        }
+        RowType::Unstructured(items) => {
+            items.extend(tracks.collect::<Result<Vec<RawTrackRow>, rusqlite::Error>>()?);
+        }
+    };
 
     Ok(())
 }
