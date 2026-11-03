@@ -172,12 +172,19 @@ pub fn convert(
 
     match target {
         Target::Csv => {
-            let writer =
+            let mut writer =
                 csv::Writer::from_writer(File::create(out_name).map_err(|_| Error::IoOutput)?);
-            let mut consumer = CsvConsumer::new(writer);
             if structured {
+                writer
+                    .write_record(["path", "artist", "title", "listen_count"])
+                    .map_err(|_| Error::IoOutput)?;
+                let mut consumer = CsvConsumer::new(writer);
                 consumer.consume(tracks.map(|r| r.map(StructuredRows::from)))?;
             } else {
+                writer
+                    .write_record(["path", "name", "listen_count"])
+                    .map_err(|_| Error::IoOutput)?;
+                let mut consumer = CsvConsumer::new(writer);
                 consumer.consume(tracks)?;
             }
         }
