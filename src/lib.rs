@@ -1,8 +1,11 @@
-use std::path::Path;
+use std::{
+    hash::{BuildHasher, RandomState},
+    path::Path,
+};
 
-use crate::parse::{convert, get_stats_file};
+use crate::parse::{convert, convert_in_mem, get_stats_file};
 pub use error::Error;
-pub use parse::Target;
+pub use parse::{RawTrackRow, RowType, StructuredRows, Target};
 
 mod consumers;
 mod error;
@@ -18,4 +21,9 @@ pub fn parse(
     convert(&path, target, output_path, structured)?;
 
     Ok(())
+}
+
+pub fn parse_in_mem(file: &Path, structured: RowType<'_>) -> Result<(), Error> {
+    let path = get_stats_file(file, format!("tmp_{}.db", RandomState::new().hash_one(0)))?;
+    convert_in_mem(&path, structured)
 }
